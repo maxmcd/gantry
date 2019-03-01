@@ -1,0 +1,3 @@
+#!/bin/bash
+
+gantry run ${BASH_SOURCE[0]} $@
