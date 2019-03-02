@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/strslice"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"golang.org/x/crypto/ssh/terminal"
 	yaml "gopkg.in/yaml.v2"
 )
 
@@ -31,21 +31,23 @@ func main() {
 	fmt.Println(os.Args)
 
 	if len(os.Args) > 1 && os.Args[1] == "run" {
-		projRoot, err := filepath.Abs(filepath.Dir(os.Args[2]) + "../../../")
-		if err != nil {
-			log.Fatal(err)
-		}
-		b, err := ioutil.ReadFile(projRoot + "/gantry.yml")
-		var c Config
-		if err := yaml.Unmarshal(b, &c); err != nil {
-			log.Fatal(err)
-		}
-		exec.Command("docker", "")
-		if err := runContainer(projRoot, c); err != nil {
-			log.Fatal(err)
-		}
+		run()
 	}
+}
 
+func run() {
+	projRoot, err := filepath.Abs(filepath.Dir(os.Args[2]) + "../../../")
+	if err != nil {
+		log.Fatal(err)
+	}
+	b, err := ioutil.ReadFile(projRoot + "/gantry.yml")
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		log.Fatal(err)
+	}
+	if err := runContainer(projRoot, c); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func runContainer(projRoot string, c Config) error {
@@ -109,11 +111,14 @@ func runContainer(projRoot string, c Config) error {
 		AttachStdin:  true,
 		AttachStderr: true,
 		AttachStdout: true,
-		Cmd:          []string{"python", "./main.py"},
+		Cmd:          os.Args[2:],
 	})
+
 	if err != nil {
 		return err
 	}
+
+	terminal.MakeRaw(0)
 
 	hr, err := cli.ContainerExecAttach(ctx, id.ID, types.ExecConfig{})
 	fmt.Println(hr, err)
@@ -123,7 +128,6 @@ func runContainer(projRoot string, c Config) error {
 	return nil
 }
 
-// https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07
 func Tar(src string, writers ...io.Writer) error {
 	// ensure the src actually exists before trying to tar it
 	if _, err := os.Stat(src); err != nil {
@@ -136,6 +140,7 @@ func Tar(src string, writers ...io.Writer) error {
 	tw := tar.NewWriter(gzw)
 	defer tw.Close()
 
+	// https://medium.com/@skdomino/taring-untaring-files-in-go-6b07cf56bc07
 	// walk path
 	return filepath.Walk(src, func(file string, fi os.FileInfo, err error) error {
 		if err != nil {

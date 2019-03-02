@@ -1,3 +1,6 @@
 #!/bin/bash
+set -e
+
+which gantry
 
 gantry run ${BASH_SOURCE[0]} $@

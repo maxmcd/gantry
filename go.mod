@@ -7,6 +7,7 @@ require (
 	github.com/docker/go-units v0.3.3 // indirect
 	github.com/opencontainers/go-digest v1.0.0-rc1 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
+	golang.org/x/crypto v0.0.0-20190228161510-8dd112bcdc25
 	golang.org/x/net v0.0.0-20190228165749-92fc7df08ae7 // indirect
 	gopkg.in/yaml.v2 v2.2.2
 )
