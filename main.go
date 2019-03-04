@@ -10,8 +10,10 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -22,20 +24,54 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
+// Config is a struct representation of the gantry config file
 type Config struct {
 	Dockerfile string   `yaml:"dockerfile"`
 	Commands   []string `yaml:"commands"`
 }
 
 func main() {
-	fmt.Println(os.Args)
-
+	if len(os.Args) == 1 {
+		if err := initialize(); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run" {
 		run()
 	}
 }
 
+func initialize() error {
+	fmt.Println("Initializing new gantry project")
+	b, err := ioutil.ReadFile("./gantry.yml")
+	if err != nil {
+		return err
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return err
+	}
+	if err := os.RemoveAll("./gantry/bin"); err != nil {
+		return err
+	}
+	if err := os.MkdirAll("./gantry/bin", 0777); err != nil {
+		return err
+	}
+	for _, command := range c.Commands {
+		if err := ioutil.WriteFile(
+			fmt.Sprintf("./gantry/bin/%s", command),
+			[]byte(commandFile), 0755); err != nil {
+			return err
+		}
+	}
+	if err := ioutil.WriteFile("./gantry/activate", []byte(activateFile), 0755); err != nil {
+		return err
+	}
+	return nil
+}
+
 func run() {
+	fmt.Println("Running command with gantry")
 	projRoot, err := filepath.Abs(filepath.Dir(os.Args[2]) + "../../../")
 	if err != nil {
 		log.Fatal(err)
@@ -67,13 +103,14 @@ func runContainer(projRoot string, c Config) error {
 		createAndStart = !i.State.Running
 	}
 	if createAndStart {
+		fmt.Println("Building container for gantry")
 		// consider not removing and resuming on a stopped container
 		if err := cli.ContainerRemove(ctx, name, types.ContainerRemoveOptions{}); err != nil {
 			log.Println(err)
 		}
 
 		buf := new(bytes.Buffer)
-		if err := Tar(projRoot, buf); err != nil {
+		if err := Tar(projRoot+"./"+c.Dockerfile, buf); err != nil {
 			return err
 		}
 
@@ -106,25 +143,48 @@ func runContainer(projRoot string, c Config) error {
 		}
 	}
 
+	cmd := make([]string, len(os.Args[2:]))
+	copy(cmd, os.Args[2:])
+	cmd[0] = filepath.Base(cmd[0])
 	id, err := cli.ContainerExecCreate(ctx, name, types.ExecConfig{
 		Tty:          true,
 		AttachStdin:  true,
 		AttachStderr: true,
 		AttachStdout: true,
-		Cmd:          os.Args[2:],
+		Cmd:          cmd,
 	})
-
 	if err != nil {
 		return err
 	}
 
-	terminal.MakeRaw(0)
+	sigs := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		fmt.Println(sig)
+		done <- true
+	}()
 
 	hr, err := cli.ContainerExecAttach(ctx, id.ID, types.ExecConfig{})
-	fmt.Println(hr, err)
-	go io.Copy(hr.Conn, os.Stdin)
-	stdcopy.StdCopy(os.Stdout, os.Stderr, hr.Reader)
+	if err != nil {
+		return err
+	}
+	oldState, err := terminal.MakeRaw(0)
+	if err != nil {
+		return err
+	}
 
+	defer terminal.Restore(0, oldState)
+	go func() {
+		io.Copy(hr.Conn, os.Stdin)
+		done <- true
+	}()
+	go func() {
+		stdcopy.StdCopy(os.Stdout, os.Stderr, hr.Reader)
+		done <- true
+	}()
+	<-done
 	return nil
 }
 
@@ -178,3 +238,68 @@ func Tar(src string, writers ...io.Writer) error {
 		return nil
 	})
 }
+
+var activateFile = `
+# This file must be used with "source bin/activate" *from bash*
+# you cannot run it directly
+# (special thanks to virtualenv)
+
+deactivate () {
+    # reset old environment variables
+    if [ -n "$_OLD_GANTRY_PATH" ] ; then
+        PATH="$_OLD_GANTRY_PATH"
+        export PATH
+        unset _OLD_GANTRY_PATH
+    fi
+
+    # This should detect bash and zsh, which have a hash command that must
+    # be called to get it to forget past commands.  Without forgetting
+    # past commands the $PATH changes we made may not be respected
+    if [ -n "$BASH" -o -n "$ZSH_VERSION" ] ; then
+        hash -r 2>/dev/null
+    fi
+
+    if [ -n "$_OLD_GANTRY_PS1" ] ; then
+        PS1="$_OLD_GANTRY_PS1"
+        export PS1
+        unset _OLD_GANTRY_PS1
+    fi
+
+    unset VIRTUAL_ENV
+    if [ ! "$1" = "nondestructive" ] ; then
+    # Self destruct!
+        unset -f deactivate
+    fi
+}
+
+
+# unset irrelavent variables
+deactivate nondestructive
+
+_OLD_GANTRY_PATH=$PATH
+_OLD_GANTRY_PS1=$PS1
+
+
+PATH="$(dirname ${BASH_SOURCE[0]})/bin:$PATH"
+export PATH
+
+PS1="(gantry) ${PS1:-}"
+export PS1
+
+
+# This should detect bash and zsh, which have a hash command that must
+# be called to get it to forget past commands.  Without forgetting
+# past commands the $PATH changes we made may not be respected
+if [ -n "$BASH" -o -n "$ZSH_VERSION" ] ; then
+    hash -r 2>/dev/null
+fi
+`
+
+var commandFile = `
+#!/bin/bash
+set -e
+
+which gantry
+
+gantry run ${BASH_SOURCE[0]} $@
+`
